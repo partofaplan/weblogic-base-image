@@ -7,6 +7,7 @@ import datetime as dt
 import json
 import os
 import sys
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -106,11 +107,20 @@ def main() -> None:
 
         if config_digest:
             config_url = f"https://{REGISTRY}/v2/{REPOSITORY}/blobs/{config_digest}"
-            config_bytes, _ = request(config_url, headers=with_bearer(token))
             try:
-                config = json.loads(config_bytes.decode("utf-8"))
-                created = to_datetime(config.get("created"))
-            except json.JSONDecodeError:
+                config_bytes, _ = request(
+                    config_url,
+                    headers={
+                        **with_bearer(token),
+                        "Accept": "application/vnd.docker.container.image.v1+json",
+                    },
+                )
+                try:
+                    config = json.loads(config_bytes.decode("utf-8"))
+                    created = to_datetime(config.get("created"))
+                except json.JSONDecodeError:
+                    created = None
+            except (urllib.error.HTTPError, urllib.error.URLError):
                 created = None
 
         if should_update(latest_created, latest_tag, created, tag):
