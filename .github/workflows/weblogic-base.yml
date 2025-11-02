@@ -6,7 +6,8 @@ on:
     - cron: "0 */6 * * *"
 
 env:
-  BASE_IMAGE_NAME: container-registry.oracle.com/middleware/weblogic
+  BASE_IMAGE_REGISTRY: container-registry.oracle.com
+  BASE_IMAGE_REPOSITORY: middleware/weblogic
   DOCKERHUB_REPO: partofaplan/weblogic-base
 
 jobs:
@@ -15,8 +16,11 @@ jobs:
     outputs:
       base_image_ref: ${{ steps.digest.outputs.image_ref }}
       base_image_digest: ${{ steps.digest.outputs.digest }}
+      base_image_tag: ${{ steps.latest.outputs.tag }}
       should_build: ${{ steps.build_gate.outputs.should_build }}
     steps:
+      - uses: actions/checkout@v4
+
       - name: Log in to Oracle Container Registry
         env:
           OCR_USERNAME: ${{ secrets.OCR_USERNAME }}
@@ -28,13 +32,29 @@ jobs:
           fi
           echo "$OCR_PASSWORD" | docker login container-registry.oracle.com -u "$OCR_USERNAME" --password-stdin
 
-      - name: Pull latest upstream image
-        run: docker pull "${BASE_IMAGE_NAME}:latest"
+      - name: Resolve latest upstream tag
+        id: latest
+        env:
+          OCR_USERNAME: ${{ secrets.OCR_USERNAME }}
+          OCR_PASSWORD: ${{ secrets.OCR_PASSWORD }}
+        run: |
+          python3 scripts/get_latest_tag.py > latest.json
+          jq . latest.json
+          echo "tag=$(jq -r '.tag' latest.json)" >> "$GITHUB_OUTPUT"
+          echo "digest=$(jq -r '.digest' latest.json)" >> "$GITHUB_OUTPUT"
+          echo "created=$(jq -r '.created' latest.json)" >> "$GITHUB_OUTPUT"
+
+      - name: Pull upstream image by digest
+        env:
+          BASE_IMAGE_NAME: ${{ env.BASE_IMAGE_REGISTRY }}/${{ env.BASE_IMAGE_REPOSITORY }}
+        run: docker pull "${BASE_IMAGE_NAME}@${{ steps.latest.outputs.digest }}"
 
       - name: Resolve upstream digest
         id: digest
+        env:
+          BASE_IMAGE_NAME: ${{ env.BASE_IMAGE_REGISTRY }}/${{ env.BASE_IMAGE_REPOSITORY }}
         run: |
-          ref=$(docker image inspect "${BASE_IMAGE_NAME}:latest" --format '{{index .RepoDigests 0}}')
+          ref=$(docker image inspect "${BASE_IMAGE_NAME}@${{ steps.latest.outputs.digest }}" --format '{{index .RepoDigests 0}}')
           digest="${ref#*@}"
           echo "digest=${digest}" >> "$GITHUB_OUTPUT"
           echo "image_ref=${BASE_IMAGE_NAME}@${digest}" >> "$GITHUB_OUTPUT"
@@ -94,12 +114,8 @@ jobs:
 
       - name: Derive image metadata
         id: metadata
-        env:
-          BASE_DIGEST: ${{ needs.detect-upstream.outputs.base_image_digest }}
         run: |
-          short="${BASE_DIGEST#sha256:}"
-          tag="base-${short:0:12}"
-          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          echo "tag=${{ needs.detect-upstream.outputs.base_image_tag }}" >> "$GITHUB_OUTPUT"
 
       - name: Build customized image
         env:
